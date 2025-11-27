@@ -62,6 +62,12 @@ class EqualWeightPortfolio:
         """
         TODO: Complete Task 1 Below
         """
+        # 1. 計算資產數量 N
+        n_assets = len(assets)
+        
+        # 2. 每個資產的權重都是 1/N
+        # 直接賦值給對應的 columns，Pandas 會自動填滿所有日期
+        self.portfolio_weights[assets] = 1.0 / n_assets
 
         """
         TODO: Complete Task 1 Above
@@ -113,8 +119,21 @@ class RiskParityPortfolio:
         """
         TODO: Complete Task 2 Below
         """
-
-
+        # 1. 使用 df_returns 計算移動標準差 (Rolling Standard Deviation)
+        # 這對應到公式中的 sigma_i
+        rolling_std = df_returns[assets].rolling(window=self.lookback).std()
+        
+        # 2. 取倒數 (Inverse Volatility)
+        # 對應到 1 / sigma_i
+        inv_vol = 1.0 / rolling_std
+        
+        # 3. 計算橫向總和 (Row-sum)
+        # 對應到分母 sum(1/sigma_j)
+        row_sums = inv_vol.sum(axis=1)
+        
+        # 4. 歸一化 (Normalize) 算出權重
+        # 使用 div(axis=0) 讓每一行都除以該行的總和
+        self.portfolio_weights[assets] = inv_vol.div(row_sums, axis=0)
 
         """
         TODO: Complete Task 2 Above
@@ -187,15 +206,34 @@ class MeanVariancePortfolio:
                 """
                 TODO: Complete Task 3 Below
                 """
+                
+                # 1. 定義變數 w (權重向量)
+                # lb=0.0 表示 w >= 0 (Long only constraint)
+                # ub=1.0 表示 w <= 1
+                w = model.addMVar(n, name="w", lb=0.0, ub=1.0)
 
-                # Sample Code: Initialize Decision w and the Objective
-                # NOTE: You can modify the following code
-                w = model.addMVar(n, name="w", ub=1)
-                model.setObjective(w.sum(), gp.GRB.MAXIMIZE)
+                # 2. 加入預算限制條件: sum(w) = 1
+                model.addConstr(w.sum() == 1, name="budget")
+
+                # 3. 定義目標函數: Maximize w'mu - (gamma/2) * w'Sigma w
+                # 注意：Sigma 和 mu 是 numpy array，w 是 Gurobi MVar
+                # Gurobi 支援直接用 @ 進行矩陣相乘
+                portfolio_return = mu @ w
+                portfolio_risk = w @ Sigma @ w
+                
+                # 設定目標：最大化 (Expected Return - Risk Penalty)
+                model.setObjective(portfolio_return - 0.5 * gamma * portfolio_risk, gp.GRB.MAXIMIZE)
 
                 """
                 TODO: Complete Task 3 Above
                 """
+                
+                # 注意：你需要把原本 Sample Code 下面那兩行 (w = ... 和 model.setObjective...) 刪除或註解掉
+                # 因為我們已經在上面重新定義了 w 和 Objective
+                
+                # Sample Code: Initialize Decision w and the Objective
+                # w = model.addMVar(n, name="w", ub=1)  <-- 刪除或註解這行
+                # model.setObjective(w.sum(), gp.GRB.MAXIMIZE) <-- 刪除或註解這行
                 model.optimize()
 
                 # Check if the status is INF_OR_UNBD (code 4)
