@@ -119,20 +119,18 @@ class RiskParityPortfolio:
         """
         TODO: Complete Task 2 Below
         """
-        # 1. 使用 df_returns 計算移動標準差 (Rolling Standard Deviation)
-        # 這對應到公式中的 sigma_i
-        rolling_std = df_returns[assets].rolling(window=self.lookback).std()
+        # 這是關鍵修改：加上 .shift(1)
+        rolling_std = df_returns[assets].rolling(window=self.lookback).std().shift(1)
         
-        # 2. 取倒數 (Inverse Volatility)
-        # 對應到 1 / sigma_i
+        # 2. 計算波動率倒數 (Inverse Volatility)
         inv_vol = 1.0 / rolling_std
         
-        # 3. 計算橫向總和 (Row-sum)
-        # 對應到分母 sum(1/sigma_j)
+        # 3. 計算分母 (Row Sums)
+        # axis=1 代表將每一橫列 (每天) 的數值加總
         row_sums = inv_vol.sum(axis=1)
         
-        # 4. 歸一化 (Normalize) 算出權重
-        # 使用 div(axis=0) 讓每一行都除以該行的總和
+        # 4. 歸一化計算權重
+        # div(axis=0) 確保每一列都除以該列的總和
         self.portfolio_weights[assets] = inv_vol.div(row_sums, axis=0)
 
         """
