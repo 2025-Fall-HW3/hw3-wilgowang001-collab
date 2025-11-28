@@ -104,27 +104,24 @@ class RiskParityPortfolio:
         assets = df.columns[df.columns != self.exclude]
         self.portfolio_weights = pd.DataFrame(index=df.index, columns=df.columns)
         
-        # 先將所有權重初始化為 0
         self.portfolio_weights.fillna(0, inplace=True)
 
         """
         TODO: Complete Task 2 Below
         """
-        # 改用迴圈 (Loop) 實作，確保與 Task 3 的 window 處理方式完全一致
-        # 這能避免 pandas rolling 與 numpy std 之間的微小誤差
-        
-        for i in range(self.lookback, len(df)):
-            # 1. 取得過去 lookback 天的報酬 (不包含今天 i)
-            # 例如: i=50, window=[0...49]
+        # 修改 1: 起始點改為 self.lookback + 1，避開 df_returns 的第一行 (0.0)
+        # 這樣切片時才會是從 index 1 開始 (例如 1~50)，確保數據全是真實報酬
+        for i in range(self.lookback + 1, len(df)):
+            
+            # 1. 取得過去 lookback 天的報酬
             window_returns = df_returns[assets].iloc[i - self.lookback : i]
             
             # 2. 計算波動率 (std)
-            # ddof=1 是預設值 (樣本標準差)，與 pandas 預設一致
             vols = window_returns.std()
             
             # 3. 計算倒數 (Inverse Volatility)
-            # 這裡加上一個極小值 1e-8 避免除以 0 (雖然回測數據通常不會是 0)
-            inv_vols = 1.0 / (vols + 1e-8)
+            # 修改 2: 移除 1e-8 以符合數學精確度 (除非題目特定要求)
+            inv_vols = 1.0 / vols 
             
             # 4. 歸一化
             weights = inv_vols / inv_vols.sum()
@@ -138,7 +135,6 @@ class RiskParityPortfolio:
 
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
-
     def calculate_portfolio_returns(self):
         if not hasattr(self, "portfolio_weights"):
             self.calculate_weights()
