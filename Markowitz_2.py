@@ -70,11 +70,47 @@ class MyPortfolio:
         """
         TODO: Complete Task 4 Below
         """
+        # 使用 Global Minimum Variance (GMV) 策略
+        # 這個策略利用 Gurobi 找出波動率最小的組合，不需預測報酬率
         
-        
+        # 建立 Gurobi 環境 (放在迴圈外以提升效能)
+        with gp.Env(empty=True) as env:
+            env.setParam("OutputFlag", 0)  # 關閉 Gurobi 輸出資訊
+            env.start()
+            
+            # 遍歷每一天 (從 lookback 天數後開始)
+            for i in range(self.lookback, len(self.returns)):
+                # 1. 取得過去 N 天的報酬率 (使用切片 i-lookback : i，不包含當天 i，避免偷看答案)
+                window_returns = self.returns[assets].iloc[i - self.lookback : i]
+                
+                # 2. 計算共變異數矩陣 (Covariance Matrix)
+                Sigma = window_returns.cov().values
+                
+                # 3. 建構優化模型
+                with gp.Model(env=env) as model:
+                    # 變數: 權重 w (0 <= w <= 1)
+                    w = model.addMVar(n_assets, lb=0.0, ub=1.0, name="w")
+                    
+                    # 目標: 最小化組合變異數 (0.5 * w.T * Sigma * w)
+                    # 這裡不需要 mu (預期報酬)，因為我們只求最小風險
+                    model.setObjective(0.5 * w @ Sigma @ w, gp.GRB.MINIMIZE)
+                    
+                    # 限制: 權重總和為 1
+                    model.addConstr(w.sum() == 1, "budget")
+                    
+                    # 求解
+                    model.optimize()
+                    
+                    # 4. 填入權重
+                    current_date = self.returns.index[i]
+                    if model.status == gp.GRB.OPTIMAL:
+                        self.portfolio_weights.loc[current_date, assets] = w.X
+                    else:
+                        # 如果優化失敗 (極少見)，退回等權重
+                        self.portfolio_weights.loc[current_date, assets] = 1.0 / n_assets
+
         """
         TODO: Complete Task 4 Above
-        """
 
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
