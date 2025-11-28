@@ -34,7 +34,7 @@ Problem 4 & 5: Daily Mean-Variance Optimization (All-in Sharpe)
 """
 
 class MyPortfolio:
-    def __init__(self, price, exclude, lookback=63, gamma=1.0):
+    def __init__(self, price, exclude, lookback=63, gamma=2.0):
         # lookback 改短一點 (63天=一季)，反應更快，犧牲換手率換取敏捷度
         self.exclude = exclude
         self.lookback = lookback
