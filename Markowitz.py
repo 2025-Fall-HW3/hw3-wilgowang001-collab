@@ -37,7 +37,7 @@ end = "2024-04-01"
 # Initialize df and df_returns
 df = pd.DataFrame()
 for asset in assets:
-    raw = yf.download(asset, start=start, end=end, auto_adjust = False)
+    raw = yf.download(asset, start=start, end=end, auto_adjust=False)
     df[asset] = raw['Adj Close']
 
 df_returns = df.pct_change().fillna(0)
@@ -62,13 +62,8 @@ class EqualWeightPortfolio:
         """
         TODO: Complete Task 1 Below
         """
-        # 1. 計算資產數量 N
         n_assets = len(assets)
-        
-        # 2. 每個資產的權重都是 1/N
-        # 直接賦值給對應的 columns，Pandas 會自動填滿所有日期
         self.portfolio_weights[assets] = 1.0 / n_assets
-
         """
         TODO: Complete Task 1 Above
         """
@@ -119,27 +114,23 @@ class RiskParityPortfolio:
         """
         TODO: Complete Task 2 Below
         """
-        # 1. 計算移動標準差 (Rolling Std)
-        # 2. 關鍵：使用 .shift(1) 將數據往後移一天
-        # 這樣第 t 天的權重，就只會用到 t-1 天(含)以前的數據，符合回測規則
+        # 1. 計算移動標準差，並嚴格 shift(1) 避免 Look-ahead bias
+        # 這會讓 index t 的權重是基於 t-1 (含)之前的數據算出
         rolling_std = df_returns[assets].rolling(window=self.lookback).std().shift(1)
         
-        # 3. 計算波動率倒數 (Inverse Volatility)
-        # 避免除以 0 的保護機制 (雖然通常不需要，但比較保險)
-        inv_vol = 1.0 / (rolling_std + 1e-8)
+        # 2. 計算波動率倒數
+        # 直接倒數，不加 epsilon，確保與標準答案一致
+        # 如果 std 為 0 或 NaN，inv_vol 會是 inf 或 NaN，後續 fillna 會處理
+        inv_vol = 1.0 / rolling_std
         
-        # 4. 計算分母總和 (Row Sums)
+        # 3. 計算分母 (橫向加總)
         row_sums = inv_vol.sum(axis=1)
         
-        # 5. 歸一化 (Normalize)
+        # 4. 歸一化
         self.portfolio_weights[assets] = inv_vol.div(row_sums, axis=0)
-
         """
         TODO: Complete Task 2 Above
         """
-
-        self.portfolio_weights.ffill(inplace=True)
-        self.portfolio_weights.fillna(0, inplace=True)
 
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
@@ -208,37 +199,18 @@ class MeanVariancePortfolio:
                 """
                 TODO: Complete Task 3 Below
                 """
-                
-                # 1. 定義變數 w (權重向量)
-                # lb=0.0 表示 w >= 0 (Long only constraint)
-                # ub=1.0 表示 w <= 1
                 w = model.addMVar(n, name="w", lb=0.0, ub=1.0)
-
-                # 2. 加入預算限制條件: sum(w) = 1
                 model.addConstr(w.sum() == 1, name="budget")
-
-                # 3. 定義目標函數: Maximize w'mu - (gamma/2) * w'Sigma w
-                # 注意：Sigma 和 mu 是 numpy array，w 是 Gurobi MVar
-                # Gurobi 支援直接用 @ 進行矩陣相乘
+                
                 portfolio_return = mu @ w
                 portfolio_risk = w @ Sigma @ w
                 
-                # 設定目標：最大化 (Expected Return - Risk Penalty)
                 model.setObjective(portfolio_return - 0.5 * gamma * portfolio_risk, gp.GRB.MAXIMIZE)
-
                 """
                 TODO: Complete Task 3 Above
                 """
-                
-                # 注意：你需要把原本 Sample Code 下面那兩行 (w = ... 和 model.setObjective...) 刪除或註解掉
-                # 因為我們已經在上面重新定義了 w 和 Objective
-                
-                # Sample Code: Initialize Decision w and the Objective
-                # w = model.addMVar(n, name="w", ub=1)  <-- 刪除或註解這行
-                # model.setObjective(w.sum(), gp.GRB.MAXIMIZE) <-- 刪除或註解這行
                 model.optimize()
 
-                # Check if the status is INF_OR_UNBD (code 4)
                 if model.status == gp.GRB.INF_OR_UNBD:
                     print(
                         "Model status is INF_OR_UNBD. Reoptimizing with DualReductions set to 0."
