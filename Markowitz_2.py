@@ -61,8 +61,7 @@ class MyPortfolio:
     def calculate_weights(self):
         # Get the assets by excluding the specified column
         assets = self.price.columns[self.price.columns != self.exclude]
-        n_assets = len(assets)
-
+        
         # Calculate the portfolio weights
         self.portfolio_weights = pd.DataFrame(
             index=self.price.index, columns=self.price.columns
@@ -71,55 +70,34 @@ class MyPortfolio:
         """
         TODO: Complete Task 4 Below
         """
-        # 策略：Mean-Variance Optimization with Momentum
-        # 使用過去的平均報酬率作為預期報酬 (Momentum)，並減去風險懲罰
+        # 策略：Top-N Momentum (強勢股輪動)
+        # 不使用複雜的 Gurobi 優化，改用單純的邏輯選股，避免參數過度擬合
         
-        # 設定風險厭惡係數 (可以調整，經驗上 1.0~2.0 在此作業表現不錯)
-        risk_aversion = 1.0 
+        # 設定要持有的檔數 (Top N)
+        top_n = 3 
 
-        # 建立 Gurobi 環境
-        with gp.Env(empty=True) as env:
-            env.setParam("OutputFlag", 0)
-            env.start()
+        # 1. 計算過去 lookback 天的累積報酬率 (Momentum)
+        # rolling_sum 或 rolling_apply 都可以，這裡用 rolling sum 近似動能
+        # 同樣記得 shift(1) 避免偷看答案
+        momentum = self.returns[assets].rolling(window=self.lookback).sum().shift(1)
+
+        # 2. 針對每一天進行選股
+        for i in range(self.lookback, len(self.returns)):
+            date = self.returns.index[i]
             
-            # 遍歷每一天 (從 lookback 天數後開始)
-            for i in range(self.lookback, len(self.returns)):
-                # 1. 取得過去 N 天的報酬率 (嚴格切片，不含當天 i)
-                window_returns = self.returns[assets].iloc[i - self.lookback : i]
+            # 取得當天各資產的動能分數
+            daily_momentum = momentum.loc[date]
+            
+            # 找出前 N 名的資產索引
+            if not daily_momentum.isnull().all():
+                top_assets = daily_momentum.nlargest(top_n).index
                 
-                # 2. 計算預期報酬 mu (Momentum) 和 共變異數矩陣 Sigma
-                # 這裡假設過去表現好的板塊，未來也會好 (動能效應)
-                mu = window_returns.mean().values 
-                Sigma = window_returns.cov().values
-                
-                # 3. 建構優化模型
-                with gp.Model(env=env) as model:
-                    # 變數: 權重 w (0 <= w <= 1)
-                    w = model.addMVar(n_assets, lb=0.0, ub=1.0, name="w")
-                    
-                    # 目標: Maximize (Expected Return - Risk Penalty)
-                    # Objective = w @ mu - 0.5 * gamma * (w @ Sigma @ w)
-                    portfolio_return = w @ mu
-                    portfolio_risk = w @ Sigma @ w
-                    
-                    model.setObjective(
-                        portfolio_return - 0.5 * risk_aversion * portfolio_risk, 
-                        gp.GRB.MAXIMIZE
-                    )
-                    
-                    # 限制: 權重總和為 1
-                    model.addConstr(w.sum() == 1, "budget")
-                    
-                    # 求解
-                    model.optimize()
-                    
-                    # 4. 填入權重
-                    current_date = self.returns.index[i]
-                    if model.status == gp.GRB.OPTIMAL:
-                        self.portfolio_weights.loc[current_date, assets] = w.X
-                    else:
-                        # 如果優化失敗，退回等權重
-                        self.portfolio_weights.loc[current_date, assets] = 1.0 / n_assets
+                # 3. 平均分配資金 (Equal Weight)
+                weight = 1.0 / top_n
+                self.portfolio_weights.loc[date, top_assets] = weight
+            else:
+                # 如果資料不足 (前 50 天)，就先空手或平均分配
+                self.portfolio_weights.loc[date, assets] = 0.0
 
         """
         TODO: Complete Task 4 Above
@@ -127,7 +105,6 @@ class MyPortfolio:
 
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
-
     def calculate_portfolio_returns(self):
         # Ensure weights are calculated
         if not hasattr(self, "portfolio_weights"):
