@@ -55,27 +55,25 @@ class EqualWeightPortfolio:
         self.exclude = exclude
 
     def calculate_weights(self):
-        # Get the assets by excluding the specified column
         assets = df.columns[df.columns != self.exclude]
         self.portfolio_weights = pd.DataFrame(index=df.index, columns=df.columns)
 
         """
         TODO: Complete Task 1 Below
         """
+        # Task 1: Equal Weight
         n_assets = len(assets)
         self.portfolio_weights[assets] = 1.0 / n_assets
         """
         TODO: Complete Task 1 Above
         """
+        
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
 
     def calculate_portfolio_returns(self):
-        # Ensure weights are calculated
         if not hasattr(self, "portfolio_weights"):
             self.calculate_weights()
-
-        # Calculate the portfolio returns
         self.portfolio_returns = df_returns.copy()
         assets = df.columns[df.columns != self.exclude]
         self.portfolio_returns["Portfolio"] = (
@@ -85,10 +83,8 @@ class EqualWeightPortfolio:
         )
 
     def get_results(self):
-        # Ensure portfolio returns are calculated
         if not hasattr(self, "portfolio_returns"):
             self.calculate_portfolio_returns()
-
         return self.portfolio_weights, self.portfolio_returns
 
 
@@ -105,29 +101,37 @@ class RiskParityPortfolio:
         self.lookback = lookback
 
     def calculate_weights(self):
-        # Get the assets by excluding the specified column
         assets = df.columns[df.columns != self.exclude]
-
-        # Calculate the portfolio weights
         self.portfolio_weights = pd.DataFrame(index=df.index, columns=df.columns)
+        
+        # 先將所有權重初始化為 0
+        self.portfolio_weights.fillna(0, inplace=True)
 
         """
         TODO: Complete Task 2 Below
         """
-        # 1. 計算移動標準差，並嚴格 shift(1) 避免 Look-ahead bias
-        # 這會讓 index t 的權重是基於 t-1 (含)之前的數據算出
-        rolling_std = df_returns[assets].rolling(window=self.lookback).std().shift(1)
+        # 改用迴圈 (Loop) 實作，確保與 Task 3 的 window 處理方式完全一致
+        # 這能避免 pandas rolling 與 numpy std 之間的微小誤差
         
-        # 2. 計算波動率倒數
-        # 直接倒數，不加 epsilon，確保與標準答案一致
-        # 如果 std 為 0 或 NaN，inv_vol 會是 inf 或 NaN，後續 fillna 會處理
-        inv_vol = 1.0 / rolling_std
-        
-        # 3. 計算分母 (橫向加總)
-        row_sums = inv_vol.sum(axis=1)
-        
-        # 4. 歸一化
-        self.portfolio_weights[assets] = inv_vol.div(row_sums, axis=0)
+        for i in range(self.lookback, len(df)):
+            # 1. 取得過去 lookback 天的報酬 (不包含今天 i)
+            # 例如: i=50, window=[0...49]
+            window_returns = df_returns[assets].iloc[i - self.lookback : i]
+            
+            # 2. 計算波動率 (std)
+            # ddof=1 是預設值 (樣本標準差)，與 pandas 預設一致
+            vols = window_returns.std()
+            
+            # 3. 計算倒數 (Inverse Volatility)
+            # 這裡加上一個極小值 1e-8 避免除以 0 (雖然回測數據通常不會是 0)
+            inv_vols = 1.0 / (vols + 1e-8)
+            
+            # 4. 歸一化
+            weights = inv_vols / inv_vols.sum()
+            
+            # 5. 填入當天權重
+            self.portfolio_weights.loc[df.index[i], assets] = weights.values
+
         """
         TODO: Complete Task 2 Above
         """
@@ -136,11 +140,8 @@ class RiskParityPortfolio:
         self.portfolio_weights.fillna(0, inplace=True)
 
     def calculate_portfolio_returns(self):
-        # Ensure weights are calculated
         if not hasattr(self, "portfolio_weights"):
             self.calculate_weights()
-
-        # Calculate the portfolio returns
         self.portfolio_returns = df_returns.copy()
         assets = df.columns[df.columns != self.exclude]
         self.portfolio_returns["Portfolio"] = (
@@ -150,10 +151,8 @@ class RiskParityPortfolio:
         )
 
     def get_results(self):
-        # Ensure portfolio returns are calculated
         if not hasattr(self, "portfolio_returns"):
             self.calculate_portfolio_returns()
-
         return self.portfolio_weights, self.portfolio_returns
 
 
@@ -171,10 +170,7 @@ class MeanVariancePortfolio:
         self.gamma = gamma
 
     def calculate_weights(self):
-        # Get the assets by excluding the specified column
         assets = df.columns[df.columns != self.exclude]
-
-        # Calculate the portfolio weights
         self.portfolio_weights = pd.DataFrame(index=df.index, columns=df.columns)
 
         for i in range(self.lookback + 1, len(df)):
@@ -202,42 +198,27 @@ class MeanVariancePortfolio:
                 w = model.addMVar(n, name="w", lb=0.0, ub=1.0)
                 model.addConstr(w.sum() == 1, name="budget")
                 
+                # Objective: Return - Gamma * Risk
                 portfolio_return = mu @ w
                 portfolio_risk = w @ Sigma @ w
-                
                 model.setObjective(portfolio_return - 0.5 * gamma * portfolio_risk, gp.GRB.MAXIMIZE)
                 """
                 TODO: Complete Task 3 Above
                 """
                 model.optimize()
 
-                if model.status == gp.GRB.INF_OR_UNBD:
-                    print(
-                        "Model status is INF_OR_UNBD. Reoptimizing with DualReductions set to 0."
-                    )
-                elif model.status == gp.GRB.INFEASIBLE:
-                    # Handle infeasible model
-                    print("Model is infeasible.")
-                elif model.status == gp.GRB.INF_OR_UNBD:
-                    # Handle infeasible or unbounded model
-                    print("Model is infeasible or unbounded.")
-
                 if model.status == gp.GRB.OPTIMAL or model.status == gp.GRB.SUBOPTIMAL:
-                    # Extract the solution
                     solution = []
                     for i in range(n):
                         var = model.getVarByName(f"w[{i}]")
-                        # print(f"w {i} = {var.X}")
                         solution.append(var.X)
+                    return solution
 
-        return solution
+        return [1/n]*n # Fallback
 
     def calculate_portfolio_returns(self):
-        # Ensure weights are calculated
         if not hasattr(self, "portfolio_weights"):
             self.calculate_weights()
-
-        # Calculate the portfolio returns
         self.portfolio_returns = df_returns.copy()
         assets = df.columns[df.columns != self.exclude]
         self.portfolio_returns["Portfolio"] = (
@@ -247,48 +228,18 @@ class MeanVariancePortfolio:
         )
 
     def get_results(self):
-        # Ensure portfolio returns are calculated
         if not hasattr(self, "portfolio_returns"):
             self.calculate_portfolio_returns()
-
         return self.portfolio_weights, self.portfolio_returns
 
 
 if __name__ == "__main__":
-    # Import grading system (protected file in GitHub Classroom)
     from grader import AssignmentJudge
-
-    parser = argparse.ArgumentParser(
-        description="Introduction to Fintech Assignment 3 Part 1"
-    )
-    """
-    NOTE: For Assignment Judge
-    """
-    parser.add_argument(
-        "--score",
-        action="append",
-        help="Score for assignment",
-    )
-
-    parser.add_argument(
-        "--allocation",
-        action="append",
-        help="Allocation for asset",
-    )
-
-    parser.add_argument(
-        "--performance",
-        action="append",
-        help="Performance for portfolio",
-    )
-
-    parser.add_argument(
-        "--report", action="append", help="Report for evaluation metric"
-    )
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--score", action="append")
+    parser.add_argument("--allocation", action="append")
+    parser.add_argument("--performance", action="append")
+    parser.add_argument("--report", action="append")
     args = parser.parse_args()
-
     judge = AssignmentJudge()
-    
-    # All grading logic is protected in grader.py
     judge.run_grading(args)
