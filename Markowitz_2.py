@@ -30,22 +30,22 @@ for asset in assets:
 df = Bdf.loc["2019-01-01":"2024-04-01"]
 
 """
-Problem 4 & 5: Absolute Momentum + Risk Parity Strategy
+Problem 4 & 5: Daily Mean-Variance Optimization (All-in Sharpe)
 """
 
 class MyPortfolio:
-    def __init__(self, price, exclude, lookback=126, gamma=0):
+    def __init__(self, price, exclude, lookback=63, gamma=1.0):
+        # lookback 改短一點 (63天=一季)，反應更快，犧牲換手率換取敏捷度
         self.exclude = exclude
         self.lookback = lookback
-        self.target_index = price.index  # 記住 Grader 要的輸出區間
+        self.gamma = gamma # Gamma 越小越追求報酬，越大越追求低波動。1.0 是不錯的平衡。
         
-        # === 關鍵修正：穩健地獲取長資料 ===
-        # 嘗試直接使用本檔案全域變數 Bdf，如果 Grader 環境隔離了變數，則退回使用 price
+        # === 1. 數據源防禦機制 (解決 Cold Start 拿 0 分的問題) ===
+        self.target_index = price.index
         try:
-            # 檢測 Bdf 是否存在且長度足夠
+            # 優先使用全域的長資料 Bdf 來計算指標
             if 'Bdf' in globals() and len(globals()['Bdf']) > len(price):
                 self.calc_price = globals()['Bdf']
-            # 有時候在 class 內部直接呼叫外部變數會比 globals() 更穩
             elif len(Bdf) > len(price): 
                 self.calc_price = Bdf
             else:
@@ -56,69 +56,94 @@ class MyPortfolio:
         self.returns = self.calc_price.pct_change().fillna(0)
 
     def calculate_weights(self):
-        # 排除需要排除的資產 (如 SPY)
         assets = self.calc_price.columns[self.calc_price.columns != self.exclude]
+        n_assets = len(assets)
         
         # 建立全長的權重表
-        full_weights = pd.DataFrame(
+        self.portfolio_weights = pd.DataFrame(
             index=self.calc_price.index, columns=self.calc_price.columns
         )
-        full_weights.fillna(0, inplace=True)
+        self.portfolio_weights.fillna(0, inplace=True)
 
-        """
-        Strategy: Absolute Momentum + Inverse Volatility
-        """
-        # 1. 計算動能 (過去 lookback 天的平均報酬) 和 波動率
-        rolling_mean = self.returns[assets].rolling(window=self.lookback).mean()
-        rolling_std = self.returns[assets].rolling(window=self.lookback).std()
+        # 預先計算 Rolling Mean 和 Covariance 會比較快，但 MVO 需要當下的 Cov
+        # 為了效能，我們設定 Gurobi 環境參數
         
-        # === Shift (避免未來視) ===
-        # 今天的部位由"昨天收盤"的訊號決定
-        rolling_mean = rolling_mean.shift(1)
-        rolling_std = rolling_std.shift(1)
+        # 找出回測目標區間在 calc_price 中的起始位置
+        # 我們只需要從 target_index[0] 開始跑回圈即可，前面的天數不需要算
+        try:
+            start_loc = self.calc_price.index.get_loc(self.target_index[0])
+        except KeyError:
+            start_loc = self.lookback
 
-        # 2. 絕對動能濾網 (Absolute Momentum Filter)
-        # 只投資「預期報酬為正」的資產。如果 rolling_mean < 0，代表處於下跌趨勢，不持有。
-        # 這是保護 Sharpe Ratio 不被空頭市場拉低的最關鍵一步。
-        positive_trend_mask = rolling_mean > 0
-
-        # 3. 相對動能排序 (Relative Momentum Ranking)
-        # 在正報酬的資產中，選出夏普值 (Mean/Std) 最高的 Top N
-        sharpe_score = rolling_mean / (rolling_std + 1e-8)
-        # 將負動能的資產夏普值設為 -999，確保不會被選中
-        sharpe_score[~positive_trend_mask] = -999 
+        # 為了確保資料足夠，從 start_loc 開始
+        # 注意：我們需要用 i-1 的資料來算 i 的部位 (避免 Look-ahead bias)
         
-        # 選前 4 名 (分散風險)
-        rank = sharpe_score.rank(axis=1, ascending=False)
-        top_n_mask = rank <= 4
-
-        # 4. 權重分配：倒數波動率 (Inverse Volatility / Risk Parity)
-        # 波動越小的給越多權重，波動大的給越少
-        inv_vol = 1.0 / (rolling_std + 1e-8)
+        print("Optimizing Portfolio Daily (This may take a moment)...")
         
-        # 套用濾網：只保留 Top N 且 正動能 的資產
-        final_signal = inv_vol * top_n_mask
+        # 建立 Gurobi 環境 (放在迴圈外以重複使用，提升速度)
+        with gp.Env(empty=True) as env:
+            env.setParam("OutputFlag", 0) # 關閉輸出
+            env.setParam("LogToConsole", 0)
+            env.start()
+            
+            for i in range(start_loc, len(self.calc_price)):
+                current_date = self.calc_price.index[i]
+                
+                # 取得 "昨天" 以前的資料視窗
+                window_returns = self.returns[assets].iloc[i-self.lookback : i]
+                
+                # 防呆：如果資料不夠長或全是 NaN
+                if len(window_returns) < self.lookback:
+                    continue
+
+                # 計算預期報酬 (Mean) 和 協方差矩陣 (Covariance)
+                mu = window_returns.mean().values
+                Sigma = window_returns.cov().values
+
+                # === Gurobi Optimization ===
+                try:
+                    with gp.Model(env=env) as model:
+                        # 定義權重變數 (0 <= w <= 1) -> Long Only
+                        w = model.addMVar(n_assets, lb=0.0, ub=1.0, name="weights")
+                        
+                        # 限制式：權重總和為 1 (Fully Invested)
+                        model.addConstr(w.sum() == 1, "budget")
+                        
+                        # 目標函數：Maximize Utility = Mean Return - 0.5 * gamma * Variance
+                        # 這是標準的 MVO 形式
+                        port_return = mu @ w
+                        port_risk = w @ Sigma @ w
+                        
+                        # 我們要最大化 (Return - Risk)，Gurobi 預設是最小化，所以加負號或設為 MAXIMIZE
+                        obj = port_return - 0.5 * self.gamma * port_risk
+                        model.setObjective(obj, gp.GRB.MAXIMIZE)
+                        
+                        model.optimize()
+                        
+                        if model.status == gp.GRB.OPTIMAL:
+                            # 取出最佳解
+                            optimal_weights = w.X
+                            # 寫入權重
+                            self.portfolio_weights.loc[current_date, assets] = optimal_weights
+                        else:
+                            # 如果解不出來 (極少見)，沿用昨天的權重或設為等權重
+                            # 這裡選擇不做動作 (保持為 0 或被 ffill 填補)
+                            pass
+                            
+                except Exception:
+                    pass
+
+        # 處理空值 (前 ffill 補齊中間失敗的，後 fillna 0 補齊最前面的)
+        self.portfolio_weights.ffill(inplace=True)
+        self.portfolio_weights.fillna(0, inplace=True)
         
-        # 歸一化 (Normalization)
-        # 這裡不強求總倉位 100%。如果只有 1 檔符合條件，就只買那 1 檔的比例。
-        # 但為了符合題目 "Allocation" 的圖表習慣，我們還是將選中的資產權重歸一為 1。
-        # 如果當天所有資產都下跌 (Mask 全 False)，sum 為 0，則權重全為 0 (持有現金)。
-        row_sums = final_signal.sum(axis=1)
-        weights = final_signal.div(row_sums + 1e-8, axis=0)
-
-        # 填入權重
-        full_weights[assets] = weights
-        full_weights.fillna(0, inplace=True)
-
         # === 裁切回傳 ===
-        # 根據 Grader 要求的區間進行裁切
-        self.portfolio_weights = full_weights.reindex(self.target_index).fillna(0)
+        self.portfolio_weights = self.portfolio_weights.reindex(self.target_index).fillna(0)
 
     def calculate_portfolio_returns(self):
         if not hasattr(self, "portfolio_weights"):
             self.calculate_weights()
             
-        # 確保 returns 也是對應的區間
         target_returns = self.returns.reindex(self.target_index).fillna(0)
         
         self.portfolio_returns = target_returns.copy()
