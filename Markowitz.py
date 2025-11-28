@@ -119,23 +119,27 @@ class RiskParityPortfolio:
         """
         TODO: Complete Task 2 Below
         """
-        # 這是關鍵修改：加上 .shift(1)
+        # 1. 計算移動標準差 (Rolling Std)
+        # 2. 關鍵：使用 .shift(1) 將數據往後移一天
+        # 這樣第 t 天的權重，就只會用到 t-1 天(含)以前的數據，符合回測規則
         rolling_std = df_returns[assets].rolling(window=self.lookback).std().shift(1)
         
-        # 2. 計算波動率倒數 (Inverse Volatility)
-        inv_vol = 1.0 / rolling_std
+        # 3. 計算波動率倒數 (Inverse Volatility)
+        # 避免除以 0 的保護機制 (雖然通常不需要，但比較保險)
+        inv_vol = 1.0 / (rolling_std + 1e-8)
         
-        # 3. 計算分母 (Row Sums)
-        # axis=1 代表將每一橫列 (每天) 的數值加總
+        # 4. 計算分母總和 (Row Sums)
         row_sums = inv_vol.sum(axis=1)
         
-        # 4. 歸一化計算權重
-        # div(axis=0) 確保每一列都除以該列的總和
+        # 5. 歸一化 (Normalize)
         self.portfolio_weights[assets] = inv_vol.div(row_sums, axis=0)
 
         """
         TODO: Complete Task 2 Above
         """
+
+        self.portfolio_weights.ffill(inplace=True)
+        self.portfolio_weights.fillna(0, inplace=True)
 
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
